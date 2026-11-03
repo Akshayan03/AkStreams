@@ -2,7 +2,7 @@ name: Bootstrap AKStreams source
 on:
   push:
     paths:
-      - 'bootstrap/akstreams-source.tar.xz.b64'
+      - 'bootstrap/COMPLETE'
 permissions:
   contents: write
 jobs:
@@ -13,10 +13,10 @@ jobs:
       - name: Unpack project and commit source
         shell: bash
         run: |
-          if [ ! -f bootstrap/akstreams-source.tar.xz.b64 ]; then exit 0; fi
-          base64 -d bootstrap/akstreams-source.tar.xz.b64 > /tmp/akstreams-source.tar.xz
+          cat bootstrap/part*.txt | base64 -d > /tmp/akstreams-source.tar.xz
+          echo "3589a5c097c8a1cfa376f1ae5a798205d2071ed689759bbd97b044d562f5f8d6  /tmp/akstreams-source.tar.xz" | sha256sum -c
           tar -xJf /tmp/akstreams-source.tar.xz --strip-components=1
-          rm -rf bootstrap
+          rm -rf bootstrap .github/workflows/bootstrap.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
