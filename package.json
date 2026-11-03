@@ -1,0 +1,16 @@
+{
+  "name": "akstreams",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": ["web"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:api": "node --watch server/index.mjs",
+    "dev:web": "npm run dev --workspace web",
+    "start:api": "node server/index.mjs",
+    "test": "node --test server/tests/*.test.mjs",
+    "build": "npm run build --workspace web"
+  }
+}
