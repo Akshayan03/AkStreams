@@ -1,0 +1,26 @@
+name: Bootstrap AKStreams source
+on:
+  push:
+    paths:
+      - 'bootstrap/akstreams-source.tar.xz.b64'
+permissions:
+  contents: write
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack project and commit source
+        shell: bash
+        run: |
+          if [ ! -f bootstrap/akstreams-source.tar.xz.b64 ]; then exit 0; fi
+          base64 -d bootstrap/akstreams-source.tar.xz.b64 > /tmp/akstreams-source.tar.xz
+          tar -xJf /tmp/akstreams-source.tar.xz --strip-components=1
+          rm -rf bootstrap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "Add AKStreams application source"
+            git push
+          fi
