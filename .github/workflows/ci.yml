@@ -1,0 +1,58 @@
+name: CI
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    name: Unit, typecheck, build, E2E (fixtures)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+        env: { PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }
+      - name: Unit + endpoint tests
+        run: npm test
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Production build
+        run: npm run build
+      - name: Install ffmpeg (generates the synthetic HLS test fixture)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: E2E in installed Google Chrome (deterministic fixtures)
+        run: npx playwright test --project=fixture
+        env: { AKSTREAMS_ARTIFACTS: '${{ runner.temp }}/akstreams-e2e' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-fixture-artifacts
+          path: ${{ runner.temp }}/akstreams-e2e/
+          retention-days: 7
+  live:
+    name: E2E against live upstreams (ESPN + public HLS samples)
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 15
+    # Real third-party services can be down or change; this job reports, it does not gate merges.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+        env: { PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }
+      - run: npm run build
+      - run: npx playwright install ffmpeg
+      - run: npx playwright test --project=live
+        env: { AKSTREAMS_ARTIFACTS: '${{ runner.temp }}/akstreams-e2e' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-live-artifacts
+          path: ${{ runner.temp }}/akstreams-e2e/
+          retention-days: 7

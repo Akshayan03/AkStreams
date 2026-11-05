@@ -1,124 +1,178 @@
-import {useEffect,useMemo,useState} from 'react';
+import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import type {ReactNode} from 'react';
-import {Activity,ArrowLeft,ArrowRight,CalendarDays,ChevronRight,Compass,ExternalLink,Menu,Play,Radio,RefreshCw,Search,Settings2,ShieldCheck,Video,WifiOff} from 'lucide-react';
-import {channels as getChannels,events as getEvents,providers as getProviders,sources as getSources} from './api';
-import {VideoPlayer} from './components/VideoPlayer';
-import type {Channel,Event,Provider,Source,Sport} from './types';
+import {Activity,Compass,Menu,Radio,Settings2,X} from 'lucide-react';
+import * as api from './api';
+import {ApiError} from './api';
+import {useOnline,useRefreshingTask} from './hooks';
+import {parseRoute,routeSearch} from './lib/route';
+import type {Route} from './lib/route';
+import {scheduleInterval} from './lib/poll';
+import {today,viewerTimeZone} from './lib/time';
+import {GamesView} from './components/GamesView';
+import type {Board} from './components/GamesView';
+import {WatchView} from './components/WatchView';
+import {ChannelsView,ProvidersView} from './components/SetupViews';
+import type {ChannelResponse,Event,Provider,SourceResponse,Sport} from './types';
 
-const fmtDate=(d:Date)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-const localDate=()=>fmtDate(new Date());
-const niceDate=(date:string)=>new Date(`${date}T12:00:00`).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
-const niceTime=(date:string)=>new Date(date).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
-const compactName=(s:string)=>s.replace(/(Football Club|Basketball Club)/gi,'').trim();
-function Logo({name,url}:{name:string,url:string}){return url?<img className="club-logo" src={url} alt="" loading="lazy" onError={e=>{e.currentTarget.style.display='none'}}/>:<span className="club-placeholder">{name.slice(0,2).toUpperCase()}</span>}
-function Pill({children,live=false}:{children:ReactNode,live?:boolean}){return <span className={`status-pill ${live?'status-live':''}`}>{children}</span>}
+const message=(e:unknown)=>e instanceof Error?e.message:String(e);
+const isAbort=(e:unknown)=>(e as Error)?.name==='AbortError';
+const startsSoon=(e:Event)=>e.status==='scheduled'&&new Date(e.kickoff).getTime()-Date.now()<15*60_000;
 
 export default function App(){
-  const [sport,setSport]=useState<Sport>('all');
-  const [date,setDate]=useState(localDate());
-  const [demo,setDemo]=useState(false);
-  const [events,setEvents]=useState<Event[]>([]);
-  const [loading,setLoading]=useState(true);
-  const [error,setError]=useState('');
-  const [partial,setPartial]=useState(false);
-  const [selected,setSelected]=useState<Event|null>(null);
-  const [sources,setSources]=useState<Source[]>([]);
-  const [sourcesLoading,setSourcesLoading]=useState(false);
-  const [sourceError,setSourceError]=useState('');
-  const [providerErrors,setProviderErrors]=useState<string[]>([]);
-  const [activeSource,setActiveSource]=useState<Source|null>(null);
-  const [providerList,setProviderList]=useState<Provider[]>([]);
-  const [view,setView]=useState<'games'|'channels'|'providers'>('games');
-  const [channels,setChannels]=useState<Channel[]>([]);
-  const [search,setSearch]=useState('');
+  const tz=useMemo(viewerTimeZone,[]);
+  const [route,setRoute]=useState<Route>(()=>parseRoute(location.search));
+  const todayDate=today(tz);
+  const date=route.date??todayDate;
+  const online=useOnline();
+  const [serverDown,setServerDown]=useState(false);
   const [mobileNav,setMobileNav]=useState(false);
-  const [channelLoading,setChannelLoading]=useState(false);
-  const [refreshToken,setRefreshToken]=useState(0);
-  useEffect(()=>{getProviders().then(d=>setProviderList(d.providers)).catch(()=>{});},[]);
+  const [,setTick]=useState(0);
+  useEffect(()=>{ const t=setInterval(()=>setTick(x=>x+1),15_000); return ()=>clearInterval(t); },[]);
+
   useEffect(()=>{
-    const controller=new AbortController();setLoading(true);setError('');
-    getEvents(date,sport,demo,controller.signal).then(data=>{
-      setEvents(data.events);setPartial(data.partial);setLoading(false);
-      if(data.errors.length && !data.events.length)setError('Fixture services are unavailable. Try the demo mode while developing.');
-    }).catch(e=>{if(controller.signal.aborted)return;setLoading(false);setError(e.message);setEvents([])});
-    return ()=>controller.abort();
-  },[date,sport,demo,refreshToken]);
+    const onPop=()=>setRoute(parseRoute(location.search));
+    addEventListener('popstate',onPop);
+    return ()=>removeEventListener('popstate',onPop);
+  },[]);
+  const routeRef=useRef(route);
+  routeRef.current=route;
+  const navigate=useCallback((patch:Partial<Route>,replace=false)=>{
+    const next={...routeRef.current,...patch};
+    routeRef.current=next;
+    const search=routeSearch(next,today(tz));
+    history[replace?'replaceState':'pushState']({akstreams:true},'',search||location.pathname);
+    setRoute(next);
+    setMobileNav(false);
+  },[tz]);
+  const noteResult=useCallback((e?:unknown)=>{ setServerDown(Boolean(e instanceof ApiError&&e.offline&&navigator.onLine)); },[]);
+
+  // ---------- schedule board ----------
+  const gamesActive=route.view==='games'&&!route.event;
+  const dataKey=`${date}|${route.sport}|${route.demo?1:0}|${tz}`;
+  const [board,setBoard]=useState<Board>({key:'',data:null,error:'',updatedAt:null});
+  const [boardNonce,setBoardNonce]=useState(0);
+  const [boardBusy,setBoardBusy]=useState(false);
+  const anyLive=board.key===dataKey&&Boolean(board.data?.events.some(e=>e.status==='live'));
+  const soon=board.key===dataKey&&Boolean(board.data?.events.some(startsSoon));
+  const boardPoll=gamesActive&&!route.demo&&board.key===dataKey?scheduleInterval({anyLive,isToday:date===todayDate,startsSoon:soon}):null;
+  useRefreshingTask(async signal=>{
+    if(!gamesActive)return;
+    const key=dataKey;
+    setBoardBusy(true);
+    try {
+      const data=await api.events(date,route.sport,route.demo,tz,signal);
+      setBoard({key,data,error:'',updatedAt:new Date().toISOString()});noteResult();
+    } catch(e) {
+      if(isAbort(e))throw e;
+      noteResult(e);
+      setBoard(prev=>({key,data:prev.key===key?prev.data:null,error:message(e),updatedAt:prev.key===key?prev.updatedAt:null}));
+      throw e;
+    } finally { if(!signal.aborted) setBoardBusy(false); }
+  },boardPoll,gamesActive?`${dataKey}|${boardNonce}`:'inactive');
+  const boardLoading=gamesActive&&board.key!==dataKey;
+
+  // ---------- watch page ----------
+  const eventId=route.event;
+  const [openedEvent,setOpenedEvent]=useState<Event|null>(null);
+  const [resolution,setResolution]=useState<SourceResponse|null>(null);
+  const [sourcesError,setSourcesError]=useState('');
+  const [sourcesLoading,setSourcesLoading]=useState(false);
+  const [sourceNonce,setSourceNonce]=useState(0);
+  const [liveEvent,setLiveEvent]=useState<Event|null>(null);
+  const resolvedFor=useRef<string|null>(null);
+  useEffect(()=>{ if(resolvedFor.current!==eventId){ setResolution(null);setLiveEvent(null);setSourcesError(''); } },[eventId]);
+  const watchedEvent=liveEvent??resolution?.event??null;
+  const watchLive=Boolean(watchedEvent&&!watchedEvent.isDemo&&(watchedEvent.status==='live'||startsSoon(watchedEvent)));
+  useRefreshingTask(async signal=>{
+    if(!eventId)return;
+    setSourcesLoading(true);setSourcesError('');
+    try {
+      const data=await api.sources(eventId,sourceNonce>0,signal);
+      resolvedFor.current=eventId;setResolution(data);noteResult();
+    } catch(e) { if(isAbort(e))throw e; noteResult(e); setSourcesError(message(e)); throw e; }
+    finally { if(!signal.aborted) setSourcesLoading(false); }
+  },watchLive?3*60_000:null,eventId?`src|${eventId}|${sourceNonce}`:'inactive');
+  useRefreshingTask(async signal=>{
+    if(!eventId||!resolution)return;
+    try { const {event}=await api.event(eventId,signal); setLiveEvent(event); noteResult(); }
+    catch(e) { if(!isAbort(e)) noteResult(e); throw e; }
+  },watchLive?30_000:null,eventId?`ev|${eventId}`:'inactive');
+
+  // ---------- providers & channels ----------
+  const [providers,setProviders]=useState<Provider[]>([]);
+  const [demoStreams,setDemoStreams]=useState(false);
+  const [providersError,setProvidersError]=useState('');
+  const [providersLoading,setProvidersLoading]=useState(false);
+  const loadProviders=useCallback((signal?:AbortSignal)=>{
+    setProvidersLoading(true);
+    api.providers(signal).then(d=>{setProviders(d.providers);setDemoStreams(d.demoStreams);setProvidersError('');noteResult();})
+      .catch(e=>{ if(!isAbort(e)){ setProvidersError(message(e)); noteResult(e);} }).finally(()=>setProvidersLoading(false));
+  },[noteResult]);
+  useEffect(()=>{ const c=new AbortController(); loadProviders(c.signal); return ()=>c.abort(); },[route.view,loadProviders]);
+  useEffect(()=>{ if(resolution?.providers) setProviders(resolution.providers); },[resolution]);
+  const [channels,setChannels]=useState<ChannelResponse|null>(null);
+  const [channelsError,setChannelsError]=useState('');
+  const [channelsLoading,setChannelsLoading]=useState(false);
+  const [channelNonce,setChannelNonce]=useState(0);
   useEffect(()=>{
-    if(view!=='channels')return;
-    setChannelLoading(true);
-    getChannels().then(d=>setChannels(d.channels)).catch(()=>setChannels([])).finally(()=>setChannelLoading(false));
-  },[view]);
-  function openGame(event:Event){setSelected(event);setSources([]);setSourceError('');setActiveSource(null);setView('games');setSourcesLoading(true);
-    getSources(event.id).then(data=>{setSources(data.sources);setProviderErrors(data.providerErrors);setProviderList(data.providers);}).catch(e=>setSourceError(e.message)).finally(()=>setSourcesLoading(false));
-    history.replaceState(null,'',`?event=${encodeURIComponent(event.id)}`);
-  }
-  function closeGame(){setSelected(null);setActiveSource(null);history.replaceState(null,'',location.pathname);}
-  function refreshSources(){if(!selected)return;setSourcesLoading(true);setSourceError('');setActiveSource(null);
-    getSources(selected.id,true).then(data=>{setSources(data.sources);setProviderErrors(data.providerErrors)}).catch(e=>setSourceError(e.message)).finally(()=>setSourcesLoading(false));
-  }
-  function changeDate(days:number){const d=new Date(`${date}T12:00:00`);d.setDate(d.getDate()+days);setDate(fmtDate(d));}
-  const filtered=useMemo(()=>events.filter(event=>`${event.home} ${event.away} ${event.league}`.toLowerCase().includes(search.toLowerCase())),[events,search]);
-  const live=filtered.filter(e=>e.status==='live');
-  const upcoming=filtered.filter(e=>e.status==='scheduled');
-  const finished=filtered.filter(e=>e.status==='final');
-  const enabledCount=providerList.filter(p=>p.enabled).length;
+    if(route.view!=='channels'||route.event)return;
+    const c=new AbortController();setChannelsLoading(true);setChannelsError('');
+    api.channels(c.signal).then(d=>{setChannels(d);noteResult();}).catch(e=>{ if(!isAbort(e)){ setChannelsError(message(e)); noteResult(e);} }).finally(()=>setChannelsLoading(false));
+    return ()=>c.abort();
+  },[route.view,route.event,channelNonce,noteResult]);
+
+  useEffect(()=>{
+    if(!mobileNav)return;
+    const onKey=(e:KeyboardEvent)=>{ if(e.key==='Escape') setMobileNav(false); };
+    addEventListener('keydown',onKey); return ()=>removeEventListener('keydown',onKey);
+  },[mobileNav]);
+
+  const openGame=(event:Event)=>{ setOpenedEvent(event); navigate({event:event.id}); scrollTo({top:0}); };
+  const closeGame=()=>{
+    if(history.state?.akstreams&&history.length>1) history.back();
+    else navigate({event:null,view:'games'},true);
+  };
+  const go=(view:Route['view'],sport?:Sport)=>navigate({view,event:null,...(sport?{sport,league:''}:{})});
+  const enabledCount=providers.filter(p=>p.enabled).length;
+  const status=!online?{label:'OFFLINE',tone:'off'}:serverDown?{label:'SERVER UNREACHABLE',tone:'off'}:{label:'CONNECTED',tone:'on'};
+  const navItem=(label:string,icon:ReactNode,active:boolean,onClick:()=>void)=>
+    <button className={active?'active':''} aria-current={active?'page':undefined} onClick={onClick}>{icon} {label}</button>;
+
   return <div className="app-shell">
-    <aside className={`sidebar ${mobileNav?'sidebar-open':''}`}>
-      <div className="brand" onClick={()=>{setView('games');closeGame();setMobileNav(false)}} role="button" tabIndex={0}>
-        <div className="brand-mark"><Activity size={24} strokeWidth={3}/></div><span>AK<span>STREAMS</span></span>
-      </div>
+    <a href="#main" className="skip-link">Skip to content</a>
+    <aside className={`sidebar ${mobileNav?'sidebar-open':''}`} aria-label="Navigation">
+      <a className="brand" href="./" onClick={e=>{e.preventDefault();navigate({view:'games',event:null,sport:'all',league:'',date:null});}}>
+        <span className="brand-mark" aria-hidden="true"><Activity size={22} strokeWidth={3}/></span><span>AK<span>STREAMS</span></span>
+      </a>
+      <button className="icon-button sidebar-close" aria-label="Close menu" onClick={()=>setMobileNav(false)}><X size={18}/></button>
       <div className="nav-label">DISCOVER</div>
       <nav className="main-nav">
-        <button className={view==='games'&&sport==='all'?'active':''} onClick={()=>{setView('games');setSport('all');closeGame();setMobileNav(false)}}><Compass size={18}/> Discover</button>
-        <button className={view==='games'&&sport==='soccer'?'active':''} onClick={()=>{setView('games');setSport('soccer');closeGame();setMobileNav(false)}}><span className="soccer-icon">⚽</span> Soccer</button>
-        <button className={view==='games'&&sport==='basketball'?'active':''} onClick={()=>{setView('games');setSport('basketball');closeGame();setMobileNav(false)}}><span className="basket-icon">◉</span> Basketball</button>
-        <button className={view==='channels'?'active':''} onClick={()=>{setView('channels');closeGame();setMobileNav(false)}}><Radio size={18}/> Live Channels</button>
+        {navItem('All games',<Compass size={18}/>,route.view==='games'&&!route.event&&route.sport==='all',()=>go('games','all'))}
+        {navItem('Soccer',<span className="nav-glyph" aria-hidden="true">⚽</span>,route.view==='games'&&!route.event&&route.sport==='soccer',()=>go('games','soccer'))}
+        {navItem('Basketball',<span className="nav-glyph" aria-hidden="true">🏀</span>,route.view==='games'&&!route.event&&route.sport==='basketball',()=>go('games','basketball'))}
+        {navItem('Live channels',<Radio size={18}/>,route.view==='channels'&&!route.event,()=>go('channels'))}
       </nav>
       <div className="nav-label second-label">WORKSPACE</div>
-      <nav className="main-nav"><button className={view==='providers'?'active':''} onClick={()=>{setView('providers');closeGame();setMobileNav(false)}}><Settings2 size={18}/> Stream Providers</button></nav>
-      <div className="sidebar-bottom"><div className="system-status"><span className="pulse-dot"/> DISCOVERY ENGINE</div><strong>{enabledCount} / {providerList.length} providers active</strong><p>Streams are discovered, not hosted.</p></div>
+      <nav className="main-nav">{navItem('Source providers',<Settings2 size={18}/>,route.view==='providers'&&!route.event,()=>go('providers'))}</nav>
+      <div className="sidebar-bottom"><div className="system-status"><span className={`status-dot ${enabledCount?'on':''}`}/> DISCOVERY ENGINE</div>
+        <strong>{providers.length?`${enabledCount} / ${providers.length} providers configured`:'Provider status unknown'}</strong><p>Streams are discovered, never hosted.</p></div>
     </aside>
-    {mobileNav&&<div className="overlay" onClick={()=>setMobileNav(false)}/>}
+    {mobileNav&&<div className="overlay" onClick={()=>setMobileNav(false)} aria-hidden="true"/>}
     <div className="main-shell">
       <header className="topbar">
-        <div className="top-left"><button className="icon-button mobile-menu" aria-label="Open menu" onClick={()=>setMobileNav(true)}><Menu size={22}/></button><span className="topbar-label">YOUR HOME FOR LIVE SPORTS</span></div>
-        <div className="top-right"><div className="top-indicator"><span className="pulse-dot"/> SYSTEM ONLINE</div><div className="avatar">AK</div></div>
+        <div className="top-left"><button className="icon-button mobile-menu" aria-label="Open menu" aria-expanded={mobileNav} onClick={()=>setMobileNav(true)}><Menu size={22}/></button>
+          <span className="topbar-label">LIVE SPORTS · SOURCE DISCOVERY</span></div>
+        <div className="top-right"><div className={`top-indicator ${status.tone}`} role="status"><span className={`status-dot ${status.tone==='on'?'on':'off'}`}/> {status.label}</div></div>
       </header>
-      {selected ? <main className="main-content"><button className="back-link" onClick={closeGame}><ArrowLeft size={16}/> Back to matches</button>
-        <div className="watch-headline"><div><div className="eyebrow">{selected.sport.toUpperCase()} <span>·</span> {selected.league}</div><h1>{selected.home} <span className="versus">vs</span> {selected.away}</h1><p>{niceDate(selected.kickoff)} · {niceTime(selected.kickoff)} {selected.isDemo?'· DEMO FIXTURE':''}</p></div><div><Pill live={selected.status==='live'}>{selected.status==='live'?'● LIVE':selected.status.toUpperCase()}</Pill></div></div>
-        <div className="watch-layout"><div><div className="video-box"><VideoPlayer source={activeSource}/></div><div className="info-strip"><ShieldCheck size={16}/><span>AKStreams only indexes sources; availability, broadcast rights and geographic access depend on providers.</span></div></div>
-          <div className="source-panel"><div className="panel-title"><div><h3>Available sources</h3><p>{sourcesLoading?'Checking configured providers':`${sources.length} possible source${sources.length!==1?'s':''} found`}</p></div><button className="icon-button" onClick={refreshSources} disabled={sourcesLoading} title="Refresh providers"><RefreshCw size={17} className={sourcesLoading?'spinning':''}/></button></div>
-          {sourceError&&<div className="alert">{sourceError}</div>}
-          {sourcesLoading&&<div className="skeleton" style={{height:92}}/>}
-          {!sourcesLoading&&!sources.length&&<div className="no-source"><WifiOff size={28}/><strong>No verified sources found</strong><p>Enable official YouTube or your authorized M3U/HLS feeds in the provider configuration. A game being scheduled doesn't mean a stream exists.</p><button className="link-button" onClick={()=>{setSelected(null);setView('providers')}}>View providers <ChevronRight size={14}/></button></div>}
-          {sources.map(s=><button key={s.id} className={`source-item ${activeSource?.id===s.id?'selected':''}`} onClick={()=>setActiveSource(s)}><span className="source-play"><Play size={17}/></span><span className="source-text"><strong>{s.title}</strong><small>{s.provider} · {s.status==='candidate'?'Unconfirmed broadcaster':'Event-title match'}</small></span><span className="source-activate"><ChevronRight size={16}/></span></button>)}
-          {activeSource&&<div className="source-explainer"><div>{activeSource.reason}</div>{activeSource.status==='candidate'&&<strong>Game not confirmed on this channel.</strong>}</div>}
-          {providerErrors.length>0&&<div className="source-warnings">{providerErrors.map(e=><p key={e}>{e}</p>)}</div>}
-          </div></div>
-        {selected.broadcasters.length>0&&<section className="broadcast-line"><h3>Announced broadcasters</h3><div>{selected.broadcasters.map(b=><span className="broadcaster-chip" key={b}>{b}</span>)}</div><p>Broadcast listings are not playable stream links.</p></section>}
-      </main> : view==='providers' ? <main className="main-content"><div className="section-intro"><div className="eyebrow">INTEGRATIONS</div><h1>Stream providers</h1><p>This is AKStreams' Torrentio-equivalent: independently maintained modules search for playable broadcasts and score them against scheduled fixtures.</p></div><div className="provider-grid">{providerList.map(p=><div className="provider-card" key={p.id}><div className="provider-card-top"><div className="provider-symbol">{p.id==='youtube'?<Video size={22}/>:<Radio size={22}/>}</div><Pill live={p.enabled}>{p.enabled?'CONFIGURED':'NEEDS SETUP'}</Pill></div><h3>{p.name}</h3><p>{p.description}</p><div className="provider-foot">{p.id==='youtube'?'Live video discovery + fixture matching':'Playlist ingestion + broadcaster matching'}</div></div>)}</div><div className="config-instructions"><h3>Configure your discovery engine</h3><p>Copy <code>.env.example</code> to <code>.env</code> at the project root. Configure <code>YOUTUBE_API_KEY</code> and <code>OFFICIAL_YOUTUBE_CHANNEL_IDS</code>, or <code>AUTHORIZED_M3U_URLS</code>. Restart the API. See <code>docs/PROVIDERS.md</code> for adding another source provider.</p><p>AKStreams does not scrape paywalled broadcasts or bypass access controls.</p></div></main>
-      : view==='channels' ? <main className="main-content"><div className="section-intro"><div className="eyebrow">STREAM DIRECTORY</div><h1>Live channels</h1><p>Channels discovered from your authorized playlists. These are channels, not confirmed streams of specific games.</p></div>{channelLoading?<div className="skeleton" style={{height:100}}/>:channels.length===0?<div className="empty-state"><Radio size={30}/><h3>No live channels configured</h3><p>Add a playlist URL or file in your <code>.env</code>. AKStreams will index its entries automatically.</p></div>:<div className="channel-grid">{channels.map((ch,i)=><a key={`${ch.url}-${i}`} href={ch.url} target="_blank" rel="noreferrer" className="channel-card"><div className="channel-symbol"><Radio size={20}/></div><strong>{ch.title}</strong><small>{ch.origin} · {ch.group||'Live channel'}</small><ExternalLink size={14}/></a>)}</div>}</main>
-      : <main className="main-content"><section className="hero"><div className="hero-bg"/><div className="hero-content"><div className="hero-kicker"><span className="hero-live"/> THE NEXT ERA OF SPORTS STREAMING</div><h1>Every game.<br/><em>One destination.</em></h1><p>Find the match. Discover available broadcasts. Watch from one place.</p><button className="hero-button" onClick={()=>document.getElementById('fixtures')?.scrollIntoView({behavior:'smooth'})}>Browse matches <ArrowRight size={17}/></button></div><div className="hero-art"><div className="art-ring ring-1"/><div className="art-ring ring-2"/><div className="art-ring ring-3"/><span className="art-ball">⚽</span><span className="art-ball basket-ball">🏀</span></div></section>
-        <section id="fixtures" className="fixtures-area"><div className="fixtures-head"><div><div className="eyebrow">THE LINEUP</div><h2>Match center <span className="title-count">{events.length}</span></h2></div><button className="icon-button" title="Refresh schedule" onClick={()=>setRefreshToken(x=>x+1)}><RefreshCw size={18} className={loading?'spinning':''}/></button></div>
-        <div className="filter-row"><div className="sport-filters"><button className={sport==='all'?'active':''} onClick={()=>setSport('all')}>All games</button><button className={sport==='soccer'?'active':''} onClick={()=>setSport('soccer')}>⚽ Soccer</button><button className={sport==='basketball'?'active':''} onClick={()=>setSport('basketball')}>◉ Basketball</button></div><div className="right-filters"><div className="date-control"><button aria-label="Previous day" onClick={()=>changeDate(-1)}><ArrowLeft size={15}/></button><input aria-label="Match date" type="date" value={date} onChange={e=>setDate(e.target.value)}/><button aria-label="Next day" onClick={()=>changeDate(1)}><ArrowRight size={15}/></button></div></div></div>
-        <div className="below-filters"><div className="search-input"><Search size={17}/><input aria-label="Search match or league" placeholder="Search a team or competition..." value={search} onChange={e=>setSearch(e.target.value)}/></div><label className="demo-toggle"><input type="checkbox" checked={demo} onChange={e=>setDemo(e.target.checked)}/><span>Demo data</span></label></div>
-        {demo&&<div className="info-banner">Demo fixtures are fictional examples for building the UI and player. They are not real scheduled games.</div>}
-        {partial&&<div className="info-banner">Some schedule providers did not respond. Results may be incomplete.</div>}
-        {error&&<div className="alert">{error}</div>}
-        {loading&&<div className="game-grid">{[1,2,3,4].map(n=><div className="skeleton game-skeleton" key={n}/>)}</div>}
-        {!loading&&!filtered.length&&<div className="empty-state"><CalendarDays size={32}/><h3>No matches found</h3><p>Try a different date, remove your search, or enable demo data to preview the app.</p></div>}
-        {live.length>0&&!loading&&<GameSection title="Live right now" subtitle="Happening right now" games={live} onOpen={openGame}/>}
-        {upcoming.length>0&&!loading&&<GameSection title="Coming up" subtitle={niceDate(date)} games={upcoming} onOpen={openGame}/>}
-        {finished.length>0&&!loading&&<GameSection title="Full time" subtitle="Completed games" games={finished} onOpen={openGame}/>}
-        </section></main>}
-      <footer className="footer">AKSTREAMS <span>·</span> Built for the game <span>·</span> v0.1.0</footer>
+      {eventId ? <WatchView eventId={eventId} initialEvent={openedEvent?.id===eventId?openedEvent:null} liveEvent={liveEvent} resolution={resolution?.event.id===eventId?resolution:null}
+          sourcesError={sourcesError} sourcesLoading={sourcesLoading} onBack={closeGame} onRefreshSources={()=>setSourceNonce(n=>n+1)} onProviders={()=>go('providers')}/>
+        : route.view==='providers' ? <ProvidersView providers={providers} demoStreams={demoStreams} error={providersError} loading={providersLoading} onRefresh={()=>loadProviders()}/>
+        : route.view==='channels' ? <ChannelsView data={channels} error={channelsError} loading={channelsLoading} onRefresh={()=>setChannelNonce(n=>n+1)} onProviders={()=>go('providers')}/>
+        : <GamesView date={date} todayDate={todayDate} sport={route.sport} league={route.league} demo={route.demo} board={board.key===dataKey?board:{key:'',data:null,error:'',updatedAt:null}}
+            loading={boardLoading} pollMs={boardPoll} online={online}
+            onDate={d=>navigate({date:d===todayDate?null:d,league:''})} onSport={s=>navigate({sport:s,league:''})} onLeague={l=>navigate({league:l},true)}
+            onDemo={d=>navigate({demo:d})} onRefresh={()=>{ if(!boardBusy) setBoardNonce(n=>n+1); }} onOpen={openGame}/>}
+      <footer className="footer">AKSTREAMS <span>·</span> local discovery engine <span>·</span> v0.2.0</footer>
     </div>
   </div>;
-}
-function GameSection({title,subtitle,games,onOpen}:{title:string,subtitle:string,games:Event[],onOpen:(e:Event)=>void}){
-  return <section className="game-section"><div className="game-section-head"><h3>{title}</h3><span>{subtitle}</span></div><div className="game-grid">{games.map(event=><button className="game-card" key={event.id} onClick={()=>onOpen(event)}>
-    <div className="game-card-top"><span className="league-label">{event.league.toUpperCase()}</span><Pill live={event.status==='live'}>{event.isDemo?'DEMO':event.status==='live'?'● LIVE':event.status==='final'?'FINAL':niceTime(event.kickoff)}</Pill></div>
-    <div className="matchup"><div className="club"><Logo name={event.home} url={event.homeLogo}/><strong>{compactName(event.home)}</strong></div><div className="match-vs">{event.status==='scheduled'?<span>VS</span>:<span className="score">{event.homeScore ?? '–'}<small>:</small>{event.awayScore ?? '–'}</span>}</div><div className="club"><Logo name={event.away} url={event.awayLogo}/><strong>{compactName(event.away)}</strong></div></div>
-    <div className="game-card-bottom"><span><span className="game-card-sport">{event.sport==='soccer'?'⚽':'◉'}</span> {event.sport==='soccer'?'Soccer':'Basketball'}</span><span>Find streams <ChevronRight size={15}/></span></div>
-  </button>)}</div></section>;
 }

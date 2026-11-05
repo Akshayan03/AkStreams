@@ -3,5 +3,9 @@ dist/
 .env
 .env.*
 !.env.example
+config/*.m3u
 .DS_Store
 *.log
+test-results/
+playwright-report/
+*.tsbuildinfo
