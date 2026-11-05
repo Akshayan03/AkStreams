@@ -1,0 +1,4 @@
+#EXTM3U
+# Replace URLs with streams you are authorized to play. This file is example syntax only.
+#EXTINF:-1 tvg-name="Team A vs Team B" group-title="Sports",Team A vs Team B
+https://example.org/your-authorized-live-game.m3u8
