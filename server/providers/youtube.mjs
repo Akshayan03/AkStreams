@@ -76,7 +76,7 @@ export async function findYouTube(event) {
       id:`youtube:${video.id}`, provider:'Official YouTube', title: video.title,
       kind:'youtube', url:`https://www.youtube.com/watch?v=${video.id}`,
       videoId:video.id, confidence:match.score,reason:`${match.reason} · live on ${video.channelName}`,
-      status:'playable', origin: video.channelName,
+      status:'playable', origin: video.channelName, provenance:'title-match', liveStatus:'live',
     }];
   });
   const detail = `${videos.length} live video(s) on ${channelIds.length - failures.length}/${channelIds.length} channel(s) checked`

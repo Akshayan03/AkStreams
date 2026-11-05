@@ -54,9 +54,12 @@ export function channelMatchesBroadcaster(channel, broadcasters = []) {
 }
 const KIND_RANK = { hls: 2, youtube: 2, external: 1 };
 const STATUS_RANK = { playable: 2, candidate: 1 };
-// Event-title matches first, then confidence, then embeddable kinds over external links.
+const LIVE_RANK = { live: 3, unknown: 2, upcoming: 1, replay: 1, highlights: 0 };
+const liveRank = s => LIVE_RANK[s.liveStatus] ?? 2;
+// Event-title matches first, then live over upcoming/replay, then confidence, then embeddable kinds.
 export function rankSources(a, b) {
   return (STATUS_RANK[b.status] || 0) - (STATUS_RANK[a.status] || 0)
+    || liveRank(b) - liveRank(a)
     || b.confidence - a.confidence
     || (KIND_RANK[b.kind] || 0) - (KIND_RANK[a.kind] || 0)
     || String(a.title).localeCompare(String(b.title));

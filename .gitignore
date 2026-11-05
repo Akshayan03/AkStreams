@@ -4,6 +4,9 @@ dist/
 .env.*
 !.env.example
 config/*.m3u
+# In-app owner sources (may contain stream tokens)
+config/*.local.json
+config/*.tmp
 .DS_Store
 *.log
 test-results/

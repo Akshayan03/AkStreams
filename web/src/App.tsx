@@ -1,6 +1,6 @@
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import type {ReactNode} from 'react';
-import {Activity,Compass,Menu,Radio,Settings2,X} from 'lucide-react';
+import {Activity,Compass,Link2,Menu,Radio,Settings2,Trophy,X} from 'lucide-react';
 import * as api from './api';
 import {ApiError} from './api';
 import {useOnline,useRefreshingTask} from './hooks';
@@ -12,6 +12,8 @@ import {GamesView} from './components/GamesView';
 import type {Board} from './components/GamesView';
 import {WatchView} from './components/WatchView';
 import {ChannelsView,ProvidersView} from './components/SetupViews';
+import {OfficialView} from './components/OfficialView';
+import {MySourcesView} from './components/SourceManager';
 import type {ChannelResponse,Event,Provider,SourceResponse,Sport} from './types';
 
 const message=(e:unknown)=>e instanceof Error?e.message:String(e);
@@ -150,10 +152,12 @@ export default function App(){
         {navItem('All games',<Compass size={18}/>,route.view==='games'&&!route.event&&route.sport==='all',()=>go('games','all'))}
         {navItem('Soccer',<span className="nav-glyph" aria-hidden="true">⚽</span>,route.view==='games'&&!route.event&&route.sport==='soccer',()=>go('games','soccer'))}
         {navItem('Basketball',<span className="nav-glyph" aria-hidden="true">🏀</span>,route.view==='games'&&!route.event&&route.sport==='basketball',()=>go('games','basketball'))}
+        {navItem('Official free',<Trophy size={18}/>,route.view==='official'&&!route.event,()=>go('official'))}
         {navItem('Live channels',<Radio size={18}/>,route.view==='channels'&&!route.event,()=>go('channels'))}
       </nav>
       <div className="nav-label second-label">WORKSPACE</div>
-      <nav className="main-nav">{navItem('Source providers',<Settings2 size={18}/>,route.view==='providers'&&!route.event,()=>go('providers'))}</nav>
+      <nav className="main-nav">{navItem('My sources',<Link2 size={18}/>,route.view==='mine'&&!route.event,()=>go('mine'))}
+        {navItem('Source providers',<Settings2 size={18}/>,route.view==='providers'&&!route.event,()=>go('providers'))}</nav>
       <div className="sidebar-bottom"><div className="system-status"><span className={`status-dot ${enabledCount?'on':''}`}/> DISCOVERY ENGINE</div>
         <strong>{providers.length?`${enabledCount} / ${providers.length} providers configured`:'Provider status unknown'}</strong><p>Streams are discovered, never hosted.</p></div>
     </aside>
@@ -165,14 +169,16 @@ export default function App(){
         <div className="top-right"><div className={`top-indicator ${status.tone}`} role="status"><span className={`status-dot ${status.tone==='on'?'on':'off'}`}/> {status.label}</div></div>
       </header>
       {eventId ? <WatchView eventId={eventId} initialEvent={openedEvent?.id===eventId?openedEvent:null} liveEvent={liveEvent} resolution={resolution?.event.id===eventId?resolution:null}
-          sourcesError={sourcesError} sourcesLoading={sourcesLoading} onBack={closeGame} onRefreshSources={()=>setSourceNonce(n=>n+1)} onProviders={()=>go('providers')}/>
+          sourcesError={sourcesError} sourcesLoading={sourcesLoading} onBack={closeGame} onRefreshSources={()=>setSourceNonce(n=>n+1)} onProviders={()=>go('providers')} onOfficial={()=>go('official')}/>
+        : route.view==='official' ? <OfficialView/>
+        : route.view==='mine' ? <MySourcesView onOpenEvent={id=>{ setOpenedEvent(null); navigate({event:id}); }}/>
         : route.view==='providers' ? <ProvidersView providers={providers} demoStreams={demoStreams} error={providersError} loading={providersLoading} onRefresh={()=>loadProviders()}/>
         : route.view==='channels' ? <ChannelsView data={channels} error={channelsError} loading={channelsLoading} onRefresh={()=>setChannelNonce(n=>n+1)} onProviders={()=>go('providers')}/>
         : <GamesView date={date} todayDate={todayDate} sport={route.sport} league={route.league} demo={route.demo} board={board.key===dataKey?board:{key:'',data:null,error:'',updatedAt:null}}
             loading={boardLoading} pollMs={boardPoll} online={online}
             onDate={d=>navigate({date:d===todayDate?null:d,league:''})} onSport={s=>navigate({sport:s,league:''})} onLeague={l=>navigate({league:l},true)}
             onDemo={d=>navigate({demo:d})} onRefresh={()=>{ if(!boardBusy) setBoardNonce(n=>n+1); }} onOpen={openGame}/>}
-      <footer className="footer">AKSTREAMS <span>·</span> local discovery engine <span>·</span> v0.2.0</footer>
+      <footer className="footer">AKSTREAMS <span>·</span> local discovery engine <span>·</span> v0.3.0</footer>
     </div>
   </div>;
 }

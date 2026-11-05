@@ -49,8 +49,28 @@ export function redactUrl(value) {
   try { const u = new URL(value); return `${u.protocol}//${u.host}${u.pathname.length > 40 ? `${u.pathname.slice(0, 40)}…` : u.pathname}`; }
   catch { return '[invalid url]'; }
 }
+// Display form for owner-supplied URLs: host plus the file name only when it can't be a token
+// (e.g. "https://cdn.example.com/…/index.m3u8"). Query, fragment, credentials and path dropped.
+export function maskUrl(value) {
+  try {
+    const u = new URL(value);
+    const last = u.pathname.split('/').filter(Boolean).at(-1) || '';
+    const safeName = /^[\w.-]{1,32}$/.test(last) && !/[0-9a-f]{12,}|[A-Za-z0-9_-]{20,}/i.test(last) ? last : '';
+    return `${u.protocol}//${u.host}${u.pathname.length > 1 ? `/…${safeName ? `/${safeName}` : ''}` : '/'}`;
+  } catch { return '[invalid url]'; }
+}
+/** Resolves a host name and throws BLOCKED_ADDRESS if any answer is private/reserved. */
+export async function assertPublicHost(hostname) {
+  const host = hostname.replace(/^\[|\]$/g, '');
+  if (/^(localhost|.*\.localhost|.*\.local|.*\.internal)$/i.test(host)) throw new UpstreamError(`Blocked local hostname ${host}`, { code: 'BLOCKED_ADDRESS' });
+  if (net.isIP(host)) { if (isPrivateAddress(host)) throw new UpstreamError(`Blocked private or reserved address ${host}`, { code: 'BLOCKED_ADDRESS' }); return; }
+  let list;
+  try { list = await dns.promises.lookup(host, { all: true }); }
+  catch (error) { throw new UpstreamError(`Host ${host} does not resolve`, { code: error.code || 'DNS_FAILED' }); }
+  if (!list.length || list.some(a => isPrivateAddress(a.address))) throw new UpstreamError(`Blocked private or reserved address for ${host}`, { code: 'BLOCKED_ADDRESS' });
+}
 export function redactSecrets(text) {
-  return String(text).replace(/([?&](?:key|token|api_key|apikey|password|pass|auth|sig|signature)=)[^&\s"']+/gi, '$1[redacted]')
+  return String(text).replace(/([?&](?:key|token|access_token|api_key|apikey|password|pass|auth|sig|signature|hdnts|hdnea|policy|key-pair-id|jwt|session|x-amz-signature|x-amz-credential)=)[^&\s"']+/gi, '$1[redacted]')
     .replace(/\/\/[^/\s:@]+:[^/\s@]+@/g, '//[redacted]@');
 }
 
@@ -92,7 +112,7 @@ function once(url, { method, headers, timeoutMs, maxBytes, allowAddress, signal 
   return new Promise((resolve, reject) => {
     const client = url.protocol === 'https:' ? https : http;
     const req = client.request(url, {
-      method, headers: { 'user-agent': 'AKStreams/0.2 (local)', 'accept-encoding': 'gzip, deflate, br', ...headers },
+      method, headers: { 'user-agent': 'AKStreams/0.3 (local)', 'accept-encoding': 'gzip, deflate, br', ...headers },
       lookup: guardedLookup(allowAddress), signal, timeout: timeoutMs,
     }, res => {
       const status = res.statusCode || 0;

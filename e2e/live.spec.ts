@@ -3,7 +3,8 @@ import { playbackProof, shot } from './helpers';
 
 // LIVE SUITE — real upstreams, no interception: ESPN public scoreboard and the public Mux/Apple
 // HLS samples. Results depend on the real schedule and network; no provider keys are configured,
-// so the app must report that honestly instead of inventing sources.
+// so the app must report that honestly instead of inventing sources. Official FIBA feeds and owner
+// source import are exercised against real upstreams in live-sources.spec.ts.
 
 test('real ESPN schedule renders in the viewer time zone and opens a real game', async ({ page, request }) => {
   let date = '';
@@ -30,9 +31,13 @@ test('real ESPN schedule renders in the viewer time zone and opens a real game',
   const label = await first.getAttribute('aria-label');
   await first.click();
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
-  await expect(page.getByText('No source providers configured')).toBeVisible({ timeout: 30_000 });
+  // No keys or owner sources: the keyless official feeds are searched and honestly find no match.
+  await expect(page.getByText('No source found for this game')).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('.source-item')).toHaveCount(0);
-  console.log(`opened real game: ${label}`);
+  await expect(page.locator('.provider-results')).toContainText('Official free broadcasts (no key) · Searched · no match');
+  await expect(page.locator('.provider-results')).toContainText('Official YouTube Live · Not configured');
+  const routes = await page.locator('.wtw-route').allInnerTexts();
+  console.log(`opened real game: ${label}; where-to-watch: ${JSON.stringify(routes.map(r => r.replace(/\s+/g, ' ')))}`);
   await shot(page, 'live-desktop-watch-no-providers');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goBack();

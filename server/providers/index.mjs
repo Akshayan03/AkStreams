@@ -1,22 +1,32 @@
-import { cached } from '../lib/cache.mjs';
+import { cached, forget, forgetPrefix } from '../lib/cache.mjs';
 import { dedupeSources } from '../lib/match.mjs';
 import { redactSecrets } from '../lib/net.mjs';
+import { whereToWatch } from '../lib/broadcasters.mjs';
 import { findYouTube,youtubeInfo } from './youtube.mjs';
 import { findPlaylist,playlistInfo } from './playlist.mjs';
+import { findOfficial,officialInfo } from './official.mjs';
+import { findCustom,customInfo } from './custom.mjs';
 
-const plugins=[{ id:'youtube',find:findYouTube,info:youtubeInfo },{ id:'playlist',find:findPlaylist,info:playlistInfo }];
+const plugins=[
+  { id:'custom',find:findCustom,info:customInfo },
+  { id:'official',find:findOfficial,info:officialInfo },
+  { id:'youtube',find:findYouTube,info:youtubeInfo },
+  { id:'playlist',find:findPlaylist,info:playlistInfo },
+];
 export function providerInfo() { return plugins.map(x=>x.info()); }
+// A game-attached change affects that game; a channel change (null) can affect any game.
+export function forgetSources(eventIds) { for (const id of eventIds) { if (id) forget(`sources:${id}`); else forgetPrefix('sources:'); } }
 
 // Public, CORS-enabled HLS test streams. VOD clips, NOT sports broadcasts; demo fixtures only.
 export const DEMO_SOURCES = [
   { id:'demo:mux-bbb', provider:'Mux public test stream', origin:'test-streams.mux.dev',
     title:'Player test · Big Buck Bunny (HLS, not a sports broadcast)', kind:'hls',
     url:'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', confidence:100,
-    reason:'Public HLS sample for testing the player only. It is not this match.', status:'playable', isTest:true },
+    reason:'Public HLS sample for testing the player only. It is not this match.', status:'playable', isTest:true, provenance:'test' },
   { id:'demo:apple-bipbop', provider:'Apple HLS example', origin:'devstreaming-cdn.apple.com',
     title:'Player test · Apple bipbop (HLS, not a sports broadcast)', kind:'hls',
     url:'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8', confidence:100,
-    reason:'Apple sample HLS stream for testing source switching. It is not this match.', status:'playable', isTest:true },
+    reason:'Apple sample HLS stream for testing source switching. It is not this match.', status:'playable', isTest:true, provenance:'test' },
 ];
 export function demoStreamsEnabled() { return process.env.DEMO_STREAM === 'true'; }
 
@@ -27,7 +37,7 @@ function normalizeResult(value) {
 export async function resolveSources(event,refresh=false) {
   if (event.isDemo) {
     const enabled = demoStreamsEnabled();
-    return { sources: enabled ? DEMO_SOURCES : [], providerErrors:[], searchedAt:new Date().toISOString(),
+    return { sources: enabled ? DEMO_SOURCES : [], providerErrors:[], searchedAt:new Date().toISOString(), watch:whereToWatch(event),
       providerResults:[{ id:'demo', name:'Player test streams', status: enabled ? 'ok' : 'not-configured', count: enabled ? DEMO_SOURCES.length : 0,
         detail: enabled ? 'Public HLS samples (not sports) for demo fixtures' : 'Set DEMO_STREAM=true to attach public HLS test streams to demo fixtures' }] };
   }
@@ -43,5 +53,7 @@ export async function resolveSources(event,refresh=false) {
     const providerErrors=providerResults.filter(p=>p.status==='error').map(p=>`${p.name}: ${p.detail}`);
     return {sources,providerErrors,providerResults,searchedAt:new Date().toISOString()};
   };
-  return refresh? loader() : cached(`sources:${event.id}`,90_000,loader);
+  const result = await (refresh? loader() : cached(`sources:${event.id}`,90_000,loader));
+  // Broadcaster routes follow the latest event data, so they are not cached with the search.
+  return { ...result, watch:whereToWatch(event) };
 }

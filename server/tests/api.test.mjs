@@ -21,11 +21,15 @@ writeFileSync(playlist, [
   '#EXTINF:-1 group-title="Sports",Raptors highlights',
   'https://cdn.example.com/hl.m3u8',
 ].join('\n'));
-Object.assign(process.env, { DEMO_STREAM: 'true', YOUTUBE_API_KEY: SECRET, OFFICIAL_YOUTUBE_CHANNEL_IDS: 'UCtInrnU3QbWqFGsdKT1GZtg,@bad', AUTHORIZED_M3U_FILE: playlist, AUTHORIZED_M3U_URLS: '' });
+Object.assign(process.env, { DEMO_STREAM: 'true', YOUTUBE_API_KEY: SECRET, OFFICIAL_YOUTUBE_CHANNEL_IDS: 'UCtInrnU3QbWqFGsdKT1GZtg,@bad', AUTHORIZED_M3U_FILE: playlist, AUTHORIZED_M3U_URLS: '',
+  AKSTREAMS_SOURCES_FILE: path.join(tmp, 'sources.local.json') });
 
 const { createApp } = await import('../app.mjs');
 const { setScoreboardFetcher } = await import('../providers/schedule.mjs');
 const { setYouTubeFetcher } = await import('../providers/youtube.mjs');
+const { setOfficialFetcher } = await import('../providers/official.mjs');
+// TEST FIXTURE: official channel feeds answer with an empty Atom document (no network).
+setOfficialFetcher(async () => ({ ok: true, status: 200, url: '', text: '<feed xmlns="http://www.w3.org/2005/Atom"></feed>' }));
 const soon = new Date(Date.now() + 30 * 60_000).toISOString();
 const espnDay = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date(soon));
 setScoreboardFetcher(async url => url.includes('/nba/') && url.includes(espnDay.replaceAll('-', '')) ? { events: [{
@@ -103,13 +107,17 @@ test('discovers, ranks and labels sources for a real-shaped event', async () => 
   assert.ok(!raw.includes(SECRET), 'key never in response');
   const res = JSON.parse(raw);
   const titles = res.sources.map(s => `${s.status}:${s.kind}:${s.title}`);
+  // Verified-live (YouTube eventType=live) ranks above a playlist entry with unknown live status.
   assert.deepEqual(titles, [
-    'playable:hls:Boston Celtics vs Toronto Raptors',
     'playable:youtube:LIVE: Boston Celtics vs Toronto Raptors',
+    'playable:hls:Boston Celtics vs Toronto Raptors',
     'candidate:hls:TSN 1 · possible broadcaster',
   ]);
   assert.match(res.sources[2].reason, /NOT confirmed/);
-  assert.ok(res.providerResults.every(p => p.status === 'ok'));
+  assert.ok(res.providerResults.filter(p => p.id !== 'custom').every(p => p.status === 'ok'));
+  assert.equal(res.providerResults.find(p => p.id === 'custom').status, 'not-configured');
+  assert.match(res.providerResults.find(p => p.id === 'official').detail, /none name both teams/);
+  assert.ok(res.watch.routes.some(r => r.name === 'TSN' && r.url === 'https://www.tsn.ca/live' && r.access === 'subscription'));
   const single = await (await get(`/api/events/${encodeURIComponent(eventId)}`)).json();
   assert.equal(single.event.home, 'Boston Celtics');
 });
