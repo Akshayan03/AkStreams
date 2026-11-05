@@ -6,10 +6,11 @@ AKStreams mirrors the *architecture* of Torrentio: a fixture is a metadata objec
 
 ```js
 {
-  id: "soccer|2026-11-02|12345",
+  id: "soccer|2026-11-02|12345", // sport | ESPN (US Eastern) day | ESPN id
   sport: "soccer", league: "Premier League",
   home: "Arsenal", away: "Chelsea",
-  status: "live", kickoff: "2026-11-02T20:00:00Z",
+  status: "live", // live | scheduled | final | postponed | canceled
+  kickoff: "2026-11-02T20:00:00Z", homeScore: "2", awayScore: "1", clock: "67'",
   broadcasters: ["Example Sports Network"],
   isDemo: false
 }
@@ -17,28 +18,38 @@ AKStreams mirrors the *architecture* of Torrentio: a fixture is a metadata objec
 
 ## Provider contract
 
-Implement `async find(event)` that returns normalized `Source[]`, and `info()` to tell the UI whether the provider has been configured. See `server/providers/youtube.mjs` and `server/providers/playlist.mjs`.
+Implement `async find(event)` and `info()`. `find` returns either a plain `Source[]` (legacy) or
+`{ sources, status, detail }` so the watch page can explain how the game was searched
+(`status`: `ok` | `partial` | `skipped` | `not-configured`; throw to report `error`).
+Fetch upstreams only through `safeFetch` from `server/lib/net.mjs` (SSRF guard, size/time limits,
+concurrency cap) and run error text through `redactSecrets` before returning it.
 
 ```js
+import { safeFetch } from '../lib/net.mjs';
 export async function findMyProvider(event) {
-  // 1. Ask your legal source catalog for live/scheduled broadcasts.
+  if (!process.env.MY_PROVIDER_TOKEN) return { sources: [], status: 'not-configured', detail: 'Set MY_PROVIDER_TOKEN' };
+  // 1. Ask your legal source catalog for live/scheduled broadcasts (via safeFetch).
   // 2. Compare title/team IDs and game start time; DON'T assume any hit is a match.
   // 3. Return only sources your users can legitimately access.
-  return [{
+  return { status: 'ok', detail: '12 broadcasts checked', sources: [{
     id: "myprovider:broadcast-123",
     provider: "My Official Provider",
+    origin: "watch.my-provider.example",
     title: `${event.home} vs ${event.away}`,
     kind: "external", // 'hls' | 'youtube' | 'external'
     url: "https://your-provider.example/watch/broadcast-123",
     confidence: 95,
     reason: "Provider event IDs and start time match",
-    status: "playable" // or 'candidate' for unconfirmed channels
-  }];
+    status: "playable" // or 'candidate' for unconfirmed channels (always shown as NOT confirmed)
+  }] };
 }
 export function myProviderInfo() {
-  return { id:'mine', name:'My Official Provider', enabled:true,description:'Provider description' };
+  return { id:'mine', name:'My Official Provider', enabled:Boolean(process.env.MY_PROVIDER_TOKEN),
+    description:'Provider description', issues:[], lastError:'', lastSuccessAt:'' };
 }
 ```
+
+Never put a credential in a returned `url`, `detail` or `info()` field; everything returned is sent to the browser.
 
 Register it in `server/providers/index.mjs`:
 

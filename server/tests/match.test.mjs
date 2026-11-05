@@ -33,3 +33,20 @@ test('maps ESPN events',()=>{
   const [evt]=parseESPN(raw,'basketball','NBA','2026-11-02');
   assert.equal(evt.status,'live');assert.equal(evt.home,'Boston Celtics');assert.deepEqual(evt.broadcasters,['TSN']);
 });
+test('matches numbered broadcaster channels but not unrelated ones',()=>{
+  assert.equal(channelMatchesBroadcaster('TSN 1',['TSN']),true);
+  assert.equal(channelMatchesBroadcaster('TSNX',['TSN']),false);
+  assert.equal(channelMatchesBroadcaster('Sky Sports Main Event',['Sky Sports']),true);
+});
+test('ranks title matches above candidates and embeddable above external',()=>{
+  const list=dedupeSources([
+    {kind:'hls',url:'a',confidence:55,status:'candidate',title:'c'},
+    {kind:'external',url:'b',confidence:98,status:'playable',title:'b'},
+    {kind:'youtube',url:'c',confidence:98,status:'playable',title:'a'}]);
+  assert.deepEqual(list.map(s=>s.url),['c','b','a']);
+});
+test('rejects private, IPv6-loopback and numeric-host stream URLs',()=>{
+  for (const u of ['http://[::1]/x','http://169.254.169.254/','http://2130706433/','http://printer.local/x','https://x.internal/a','ftp://example.com/a'])
+    assert.equal(isPublicHttpUrl(u),false,u);
+  assert.equal(isPublicHttpUrl('https://cdn.example.com/live.m3u8'),true);
+});

@@ -1,9 +1,9 @@
 {
   "name": "@akstreams/web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "scripts": { "dev": "vite --host 0.0.0.0", "build": "tsc -b && vite build", "preview": "vite preview --host 0.0.0.0" },
+  "scripts": { "dev": "vite", "build": "tsc -b && vite build", "preview": "vite preview", "typecheck": "tsc -b" },
   "dependencies": {
     "hls.js": "^1.6.0",
     "lucide-react": "^0.468.0",

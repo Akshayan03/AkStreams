@@ -1,3 +1,5 @@
+import net from 'node:net';
+import { isPrivateAddress } from './net.mjs';
 // Conservative event/source matching: require BOTH teams to appear in a stream title.
 // A broadcast channel alone is a candidate, not a confirmed event-specific stream.
 const STOP_WORDS = new Set(['fc','cf','afc','sc','the','club','basketball','football','soccer','live','official','sports','stream','vs','v','and','de','at','cf','united']);
@@ -46,8 +48,18 @@ export function channelMatchesBroadcaster(channel, broadcasters = []) {
   if (!c || c.length < 3) return false;
   return broadcasters.some(name => {
     const b = normalize(name);
-    return b.length >= 3 && (b === c || (b.length >= 5 && (c.includes(b) || b.includes(c))));
+    // Exact, numbered/regional variant ("TSN" -> "TSN 1", "Sky Sports" -> "Sky Sports Main Event"), or long substring.
+    return b.length >= 3 && (b === c || c.startsWith(`${b} `) || (b.length >= 5 && (c.includes(b) || b.includes(c))));
   });
+}
+const KIND_RANK = { hls: 2, youtube: 2, external: 1 };
+const STATUS_RANK = { playable: 2, candidate: 1 };
+// Event-title matches first, then confidence, then embeddable kinds over external links.
+export function rankSources(a, b) {
+  return (STATUS_RANK[b.status] || 0) - (STATUS_RANK[a.status] || 0)
+    || b.confidence - a.confidence
+    || (KIND_RANK[b.kind] || 0) - (KIND_RANK[a.kind] || 0)
+    || String(a.title).localeCompare(String(b.title));
 }
 export function dedupeSources(sources) {
   const seen = new Set();
@@ -56,17 +68,17 @@ export function dedupeSources(sources) {
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  }).sort((a, b) => b.confidence - a.confidence);
+  }).sort(rankSources);
 }
+// Literal URL check used for stream URLs handed to the browser (server-side fetches use safeFetch).
 export function isPublicHttpUrl(value) {
   try {
     const u = new URL(value);
     if (!['https:', 'http:'].includes(u.protocol)) return false;
-    const host = u.hostname.toLowerCase();
-    if (['localhost','localhost.localdomain','0.0.0.0','::1'].includes(host)) return false;
-    if (/^(127|10|192\.168|169\.254)\./.test(host)) return false;
-    const match172 = host.match(/^172\.(\d+)\./);
-    if (match172 && +match172[1] >= 16 && +match172[1] <= 31) return false;
-    return true;
+    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (!host || /^(localhost|localhost\.localdomain|.*\.localhost|.*\.local|.*\.internal)$/.test(host)) return false;
+    if (net.isIP(host)) return !isPrivateAddress(host);
+    if (/^\d+$/.test(host) || /^0x/i.test(host)) return false; // decimal/hex IPv4 forms
+    return host.includes('.');
   } catch { return false; }
 }
