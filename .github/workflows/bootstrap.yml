@@ -1,0 +1,25 @@
+name: Restore AKStreams source
+on:
+  push:
+    paths:
+      - 'bootstrap/COMPLETE'
+permissions:
+  contents: write
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore source snapshot
+        shell: bash
+        run: |
+          cat bootstrap/part*.txt | base64 --decode > /tmp/akstreams-source.tar.xz
+          echo "a0f603042ea2ed38b641271651d4f3506267bc73410d0cdde0e3ece5a8d03809  /tmp/akstreams-source.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/akstreams-source.tar.xz --strip-components=1
+          rm -rf bootstrap
+          rm -f .github/workflows/bootstrap.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Restore complete AKStreams starter source"
+          git push
