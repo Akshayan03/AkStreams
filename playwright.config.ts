@@ -29,14 +29,16 @@ export default defineConfig({
     launchOptions: { args: ['--autoplay-policy=no-user-gesture-required', ...(process.env.E2E_REAL_AUDIO ? [] : ['--disable-audio-output'])] },
   },
   projects: [
-    { name: 'fixture', testMatch: /fixture\.spec\.ts/ },
-    { name: 'live', testMatch: /live\.spec\.ts/, use: { video: 'on' } },
+    { name: 'fixture', testMatch: /fixture[-\w]*\.spec\.ts/ },
+    { name: 'live', testMatch: /live[-\w]*\.spec\.ts/, use: { video: 'on' } },
   ],
   webServer: {
     command: 'node server/index.mjs',
     url: `http://127.0.0.1:${PORT}/health`,
     reuseExistingServer: false,
     timeout: 30_000,
-    env: { PORT: String(PORT), HOST: '127.0.0.1', DEMO_STREAM: 'true', YOUTUBE_API_KEY: '', OFFICIAL_YOUTUBE_CHANNEL_IDS: '', AUTHORIZED_M3U_URLS: '', AUTHORIZED_M3U_FILE: '' },
+    // Owner sources go to an isolated scratch store (reset in global setup), never config/.
+    env: { PORT: String(PORT), HOST: '127.0.0.1', DEMO_STREAM: 'true', YOUTUBE_API_KEY: '', OFFICIAL_YOUTUBE_CHANNEL_IDS: '', AUTHORIZED_M3U_URLS: '', AUTHORIZED_M3U_FILE: '',
+      AKSTREAMS_SOURCES_FILE: path.join(scratch, 'e2e-sources.local.json') },
   },
 });

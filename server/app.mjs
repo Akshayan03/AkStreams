@@ -4,7 +4,9 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { getEvents,getDemoEvents,getEventById,isValidDate,isValidTimeZone,todayIn,SERVER_TIME_ZONE } from './providers/schedule.mjs';
 import { getPlaylistChannels } from './providers/playlist.mjs';
-import { providerInfo,resolveSources,demoStreamsEnabled } from './providers/index.mjs';
+import { providerInfo,resolveSources,demoStreamsEnabled,forgetSources } from './providers/index.mjs';
+import { getOfficialBroadcasts } from './providers/official.mjs';
+import { listCustom,addCustom,updateCustom,removeCustom,openUrl,customChannels,warmCustom,InputError } from './providers/custom.mjs';
 import { redactSecrets } from './lib/net.mjs';
 
 const LOOPBACK_HOSTS = new Set(['localhost','127.0.0.1','[::1]','::1']);
@@ -19,6 +21,22 @@ export const CSP = [
 const SECURITY_HEADERS = { 'x-content-type-options':'nosniff', 'referrer-policy':'strict-origin-when-cross-origin',
   'x-frame-options':'DENY', 'cross-origin-opener-policy':'same-origin', 'content-security-policy':CSP };
 const EVENT_ID_RE = /^(soccer|basketball)\|(\d{4}-\d{2}-\d{2})\|([-\w]{1,40})$/;
+const MAX_BODY_BYTES = 16_384;
+const CUSTOM_RE = /^\/api\/custom-sources(?:\/([a-f0-9]{16})(\/open)?)?$/;
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = []; let size = 0, tooLarge = false;
+    req.on('data', chunk => {
+      size += chunk.length;
+      // Keep draining (bounded by requestTimeout) so the 413 response can still be delivered.
+      if (size > MAX_BODY_BYTES) { if (!tooLarge) { tooLarge = true; chunks.length = 0; reject(new InputError('Request body too large.', 413)); } return; }
+      chunks.push(chunk);
+    });
+    req.on('end', () => { if (tooLarge) return; try { resolve(size ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); } catch { reject(new InputError('Request body is not valid JSON.')); } });
+    req.on('error', reject);
+  });
+}
 
 /**
  * @param {{port:number, distDir:string, extraHosts?:string[], extraOrigins?:string[], rateLimit?:number}} options
@@ -66,17 +84,55 @@ export function createApp({ port, distDir, extraHosts = [], extraOrigins = [], r
     const originOk=!origin || allowedOrigins().has(origin);
     const cors=origin && originOk ? {'access-control-allow-origin':origin,'vary':'Origin'} : {};
     if(limited(req.socket.remoteAddress||'unknown')) return send(res,{error:'Rate limit exceeded'},429,{'retry-after':'30'});
-    if(req.method==='OPTIONS') { res.writeHead(originOk?204:403,{...cors,'access-control-allow-methods':'GET,HEAD,OPTIONS','access-control-max-age':'600'});return res.end(); }
-    if(req.method!=='GET'&&req.method!=='HEAD') return send(res,{error:'Method not allowed'},405,{allow:'GET, HEAD, OPTIONS'});
+    if(req.method==='OPTIONS') { res.writeHead(originOk?204:403,{...cors,'access-control-allow-methods':'GET,HEAD,POST,PATCH,DELETE,OPTIONS','access-control-allow-headers':'content-type','access-control-max-age':'600'});return res.end(); }
     let url;
     try { url=new URL(req.url,'http://localhost'); } catch { return send(res,{error:'Bad request'},400); }
     const route=url.pathname;
+    const mutating=['POST','PATCH','DELETE'].includes(req.method);
+    if(req.method!=='GET'&&req.method!=='HEAD'&&!(mutating&&CUSTOM_RE.test(route))) return send(res,{error:'Method not allowed'},405,{allow:'GET, HEAD, OPTIONS'});
+    if(mutating) {
+      // CSRF: writes need an allowed Origin, a same-site fetch and a JSON body (forces CORS preflight).
+      const site=String(req.headers['sec-fetch-site']||'');
+      if(!origin||!originOk||(site&&!['same-origin','same-site'].includes(site))) return send(res,{error:'Cross-site request refused'},403);
+      if(req.method!=='DELETE'&&!/^application\/json\b/i.test(String(req.headers['content-type']||''))) return send(res,{error:'Expected Content-Type: application/json'},415,cors);
+    }
     if(!route.startsWith('/api/') && route!=='/health') return serveStatic(req,res,route);
     if(!originOk) return send(res,{error:'Origin not allowed'},403);
     try {
       if(route==='/health'||route==='/api/health') return send(res,{ok:true,name:'AKStreams API',time:new Date().toISOString(),timeZone:SERVER_TIME_ZONE},200,cors);
-      if(route==='/api/providers') return send(res,{providers:providerInfo(),demoStreams:demoStreamsEnabled()},200,cors);
-      if(route==='/api/channels') return send(res,await getPlaylistChannels(),200,cors);
+      if(route==='/api/providers') { await warmCustom(); return send(res,{providers:providerInfo(),demoStreams:demoStreamsEnabled()},200,cors); }
+      if(route==='/api/channels') {
+        const [playlist,mine]=await Promise.all([getPlaylistChannels(),customChannels()]);
+        return send(res,{...playlist,channels:[...mine,...playlist.channels],configured:playlist.configured||mine.length>0},200,cors);
+      }
+      if(route==='/api/official') return send(res,await getOfficialBroadcasts(),200,cors);
+      const custom=route.match(CUSTOM_RE);
+      if(custom) {
+        const [,id,open]=custom;
+        if(open) {
+          if(req.method!=='GET'&&req.method!=='HEAD') return send(res,{error:'Method not allowed'},405,cors);
+          if(req.headers['sec-fetch-site']==='cross-site') return send(res,{error:'Cross-site request refused'},403);
+          const target=await openUrl(id);
+          if(!target) return send(res,{error:'Unknown or disabled source'},404,cors);
+          res.writeHead(302,{...SECURITY_HEADERS,...cors,location:target,'cache-control':'no-store','referrer-policy':'no-referrer'});
+          return res.end();
+        }
+        try {
+          if(!id&&(req.method==='GET'||req.method==='HEAD')) return send(res,await listCustom(),200,cors);
+          if(!id&&req.method==='POST') {
+            const source=await addCustom(await readJsonBody(req));
+            forgetSources([source.eventId]);
+            console.log(`Owner source added: ${source.kind} ${source.displayUrl}${source.eventId?` (attached to ${source.eventId})`:''}`);
+            return send(res,{source},201,cors);
+          }
+          if(id&&req.method==='PATCH') { const {source,affected}=await updateCustom(id,await readJsonBody(req)); forgetSources(affected); return send(res,{source},200,cors); }
+          if(id&&req.method==='DELETE') { const {affected}=await removeCustom(id); forgetSources(affected); res.writeHead(204,{...SECURITY_HEADERS,...cors}); return res.end(); }
+          return send(res,{error:'Method not allowed'},405,cors);
+        } catch(error) {
+          if(error instanceof InputError) return send(res,{error:error.message},error.status,cors);
+          throw error;
+        }
+      }
       if(route==='/api/events') {
         const tz=url.searchParams.get('tz')||SERVER_TIME_ZONE;
         if(!isValidTimeZone(tz)) return send(res,{error:'Invalid time zone'},400,cors);

@@ -53,6 +53,18 @@ function extractBroadcasters(event, competition) {
   }
   return [...new Set(names.map(String).map(s => s.trim()).filter(Boolean))].slice(0, 20);
 }
+// ESPN geoBroadcasts carry type (TV/Streaming/Radio), market (National/Home/Away) and region.
+function extractBroadcastDetails(competition) {
+  const seen = new Set();
+  return (competition.geoBroadcasts || []).flatMap(g => {
+    const name = String(g?.media?.shortName || '').trim().slice(0, 80);
+    const type = String(g?.type?.shortName || '').slice(0, 20);
+    const market = String(g?.market?.type || '').slice(0, 20);
+    if (!name || /radio/i.test(type) || seen.has(`${name}|${market}`)) return [];
+    seen.add(`${name}|${market}`);
+    return [{ name, type, market, region: String(g?.region || '').slice(0, 8), lang: String(g?.lang || '').slice(0, 8) }];
+  }).slice(0, 20);
+}
 export function mapStatus(type = {}) {
   const name = String(type.name || '').toUpperCase();
   if (/CANCEL|ABANDON|FORFEIT/.test(name)) return 'canceled';
@@ -84,6 +96,7 @@ function mapEvent(raw, competition, sport, league, espnDate) {
     clock: type.shortDetail || type.detail || '',
     venue: competition.venue?.fullName || '',
     broadcasters: extractBroadcasters(raw, competition),
+    broadcastDetails: extractBroadcastDetails(competition),
     isDemo: false,
   };
 }
@@ -160,7 +173,7 @@ export function getDemoEvents(date, sport = 'all', timeZone = SERVER_TIME_ZONE) 
       id: `${x[0]}|${date}|demo-${i}`, providerId: `demo-${i}`, sport:x[0],league:x[1],
       home:x[2],away:x[3],homeShort:x[4],awayShort:x[5],homeLogo:'',awayLogo:'',
       homeScore:status === 'scheduled' ? null : '1',awayScore:status === 'scheduled' ? null : '0',kickoff,
-      status,clock:'Demo fixture',venue:'',broadcasters:[],isDemo:true,
+      status,clock:'Demo fixture',venue:'',broadcasters:[],broadcastDetails:[],isDemo:true,
     };
   }).filter(event => sport === 'all' || event.sport === sport), partial:false, unavailable:false, errors:[], date, timeZone, fetchedAt:new Date().toISOString() };
 }

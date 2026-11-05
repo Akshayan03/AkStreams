@@ -28,5 +28,7 @@ export async function cached(key, duration, loader) {
     () => { if (cache.get(key) === entry) cache.delete(key); });
   return promise;
 }
+export function forget(key) { cache.delete(key); }
+export function forgetPrefix(prefix) { for (const key of [...cache.keys()]) if (key.startsWith(prefix)) cache.delete(key); }
 export function cacheSize() { return cache.size; }
 export function clearCache() { cache.clear(); }

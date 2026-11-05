@@ -1,10 +1,10 @@
 import { isDateString } from './time.ts';
 import type { Sport } from '../types.ts';
 
-export type View = 'games' | 'channels' | 'providers';
+export type View = 'games' | 'channels' | 'providers' | 'official' | 'mine';
 export type Route = { view: View; date: string | null; sport: Sport; league: string; event: string | null; demo: boolean };
 
-const VIEWS: View[] = ['games', 'channels', 'providers'];
+const VIEWS: View[] = ['games', 'channels', 'providers', 'official', 'mine'];
 const SPORTS: Sport[] = ['all', 'soccer', 'basketball'];
 
 export function parseRoute(search: string): Route {

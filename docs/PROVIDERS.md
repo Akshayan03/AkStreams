@@ -12,6 +12,7 @@ AKStreams mirrors the *architecture* of Torrentio: a fixture is a metadata objec
   status: "live", // live | scheduled | final | postponed | canceled
   kickoff: "2026-11-02T20:00:00Z", homeScore: "2", awayScore: "1", clock: "67'",
   broadcasters: ["Example Sports Network"],
+  broadcastDetails: [{ name: "Example Sports Network", type: "TV", market: "National", region: "us", lang: "en" }],
   isDemo: false
 }
 ```
@@ -61,6 +62,13 @@ const plugins = [
   {id:'mine',find:findMyProvider,info:myProviderInfo},
 ];
 ```
+
+Optional source fields: `provenance` (`official-feed` | `owner` | `title-match` | `test`), `liveStatus`
+(`live` | `upcoming` | `replay` | `highlights` | `unknown`, only from upstream metadata, never from a
+title), `scheduledStart`, `access` (`free` | `owner`). Live sources rank above upcoming/replay.
+
+Built-in examples: `official.mjs` (keyless public feeds + metadata verification), `custom.mjs` (owner
+store, masked output, same-origin play redirect), `youtube.mjs` (keyed API), `playlist.mjs`.
 
 ## Matching philosophy
 

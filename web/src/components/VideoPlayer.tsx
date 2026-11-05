@@ -2,6 +2,7 @@ import {useCallback,useEffect,useRef,useState} from 'react';
 import type Hls from 'hls.js';
 import {AlertTriangle,ExternalLink,Maximize,Minimize,Play,RadioTower,RotateCcw,SkipForward,Volume2,VolumeX} from 'lucide-react';
 import type {Source} from '../types';
+import {LIVE_LABEL} from './ui';
 
 export type PlayerState='idle'|'loading'|'playing'|'buffering'|'paused'|'blocked'|'error';
 const START_TIMEOUT_MS=25_000;
@@ -21,10 +22,18 @@ function describeHlsError(data:{type:string;details:string;response?:{code:numbe
 }
 
 function Provenance({source}:{source:Source}) {
+  const live=source.liveStatus&&source.liveStatus!=='unknown'?` · ${LIVE_LABEL[source.liveStatus]}`:'';
   if(source.isTest) return <div className="player-badge badge-test" role="note">TEST STREAM · not a sports broadcast</div>;
+  if(source.provenance==='owner') return source.status==='candidate'
+    ?<div className="player-badge badge-candidate" role="note">YOUR CHANNEL · this game is not verified on it</div>
+    :<div className="player-badge badge-owner" role="note">ADDED BY YOU · attached to this game</div>;
   if(source.status==='candidate') return <div className="player-badge badge-candidate" role="note">UNCONFIRMED CHANNEL · this game is not verified on it</div>;
-  return <div className="player-badge" role="note">TITLE MATCH · {source.origin||source.provider}</div>;
+  if(source.provenance==='official-feed') return <div className={`player-badge badge-official ${source.liveStatus==='live'?'is-live':''}`} role="note">OFFICIAL · {source.origin}{live} · FREE</div>;
+  return <div className="player-badge" role="note">TITLE MATCH · {source.origin||source.provider}{live}</div>;
 }
+// YouTube embeds run sandboxed: scripts and their own origin only. No popups, top navigation,
+// forms or downloads. enablejsapi lets the page read player state over postMessage.
+const youtubeEmbed=(videoId:string)=>`https://www.youtube-nocookie.com/embed/${encodeURIComponent(videoId)}?${new URLSearchParams({autoplay:'1',playsinline:'1',rel:'0',enablejsapi:'1',origin:location.origin})}`;
 
 export function VideoPlayer({source,onNext,hasNext=false}:{source:Source|null;onNext?:()=>void;hasNext?:boolean}) {
   const frameRef=useRef<HTMLDivElement>(null);
@@ -141,12 +150,12 @@ export function VideoPlayer({source,onNext,hasNext=false}:{source:Source|null;on
       aria-label={`Video player: ${source.title}. Keys: space play/pause, m mute, f fullscreen.`}>
       <Provenance source={source}/>
       {source.kind==='youtube'&&<iframe key={source.videoId} className="video-frame" title={source.title}
-        src={`https://www.youtube-nocookie.com/embed/${encodeURIComponent(source.videoId||'')}?autoplay=1&playsinline=1`}
+        src={youtubeEmbed(source.videoId||'')} sandbox="allow-scripts allow-same-origin allow-presentation"
         allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen referrerPolicy="strict-origin-when-cross-origin"/>}
       {source.kind==='hls'&&<video ref={videoRef} controls playsInline className="video-frame" aria-label={source.title}/>}
       {source.kind==='external'&&<div className="player-placeholder">
         <div className="player-placeholder-icon"><Play size={26}/></div>
-        <h3>Opens on the provider's site</h3><p>This source cannot be embedded. It opens in a new tab on {source.origin||source.provider}.</p>
+        <h3>Opens on the provider's site</h3><p>This source can't be embedded here. It opens in a new tab on {source.origin||source.provider}, which may ask you to sign in.</p>
         <a className="primary-button" target="_blank" rel="noopener noreferrer" href={source.url}>Open source <ExternalLink size={15}/></a>
       </div>}
       {source.kind==='hls'&&state==='loading'&&<div className="player-overlay" aria-hidden="true"><span className="spinner"/></div>}
